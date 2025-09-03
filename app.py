@@ -10,7 +10,7 @@ from sklearn.pipeline import Pipeline
 
 # Import SHAP modules
 from shap_utils import SHAPProcessor, compute_shap_values, prepare_shap_data
-from shap_visualizations import create_shap_visualization_section
+from shap_visualizations import create_shap_visualization_section, display_single_prediction_plot
 
 # Clinical intervention mapping
 CLINICAL_INTERVENTIONS = {
@@ -250,6 +250,16 @@ st.set_page_config(
     page_icon="logo.jpeg"
 )
 
+# Initialize session state for collecting SHAP results
+if 'shap_results_history' not in st.session_state:
+    st.session_state.shap_results_history = []
+
+# Add button to clear SHAP results history
+if st.sidebar.button('🔄 Clear SHAP History', help='Clear stored SHAP results to start fresh'):
+    st.session_state.shap_results_history = []
+    st.sidebar.success('SHAP history cleared!')
+    st.rerun()
+
 # Custom CSS for better styling
 st.markdown("""
 <style>
@@ -346,7 +356,7 @@ st.markdown("""
 <div class="info-box">
     <p>This application predicts the likelihood of a patient adhering to their medication regimen for chronic diseases.
     Please provide the patient's details on the left to get a prediction.</p>
-    <p><strong>How it works:</strong> Our AI model analyzes patient characteristics and behaviors to estimate adherence probability.</p>
+    <p><strong>How it works:</strong> Our ML model analyzes patient characteristics and behaviors to estimate adherence probability.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -576,6 +586,10 @@ with tab1:
                     progress_bar.progress(100, text="Analysis complete!")
                     progress_bar.empty()
 
+                    # Store SHAP result in session state for global summary plot
+                    if shap_result:
+                        st.session_state.shap_results_history.append(shap_result)
+
                 except Exception as e:
                     st.error(f"❌ Error computing SHAP values: {str(e)}")
                     st.info("💡 The prediction is still valid, but detailed explanations are unavailable.")
@@ -730,7 +744,12 @@ with tab1:
 
             # Display SHAP visualizations
             if shap_result:
-                create_shap_visualization_section(shap_result)
+                # Debug: Show current SHAP results count
+                st.write(f"Debug: {len(st.session_state.shap_results_history)} SHAP results stored")
+
+                # Pass collected SHAP results for global summary plot
+                shap_results_for_global = st.session_state.shap_results_history if len(st.session_state.shap_results_history) >= 2 else None
+                create_shap_visualization_section(shap_result, shap_results_for_global)
             else:
                 st.warning("SHAP computation failed. Using fallback feature importance.")
 
@@ -840,9 +859,10 @@ with tab3:
     - The model should be periodically retrained with new data to maintain accuracy
     - Always combine these predictions with clinical expertise and patient communication
     
-    #### Data Privacy
-    This application processes all data locally in your browser. No patient information is stored or transmitted.
+    
     """)
+    # #### Data Privacy
+    # This application processes all data locally in your browser. No patient information is stored or transmitted.
     
     # Add a section about medication adherence importance
     st.markdown("""
@@ -869,7 +889,7 @@ with tab3:
     1. Develop a predictive model for medication adherence
     2. Create a user-friendly interface for healthcare providers
     3. Generate actionable insights to guide interventions
-    4. Demonstrate the potential of AI in improving healthcare outcomes
+    4. Demonstrate the potential of machine learning in improving healthcare outcomes
     
     The final mobile application would include additional features such as:
     - Patient-facing reminders and educational content
