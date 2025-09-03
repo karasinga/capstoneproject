@@ -281,12 +281,15 @@ class SHAPVisualizer:
             logger.error(f"Error creating feature bar chart: {str(e)}")
             return self._create_error_plot("Feature Bar Chart Error")
 
-    def create_summary_plot(self, shap_result: Dict[str, Any], top_n: int = 10) -> plt.Figure:
+    def create_single_prediction_plot(self, shap_result: Dict[str, Any], top_n: int = 10) -> plt.Figure:
         """
-        Create a SHAP summary plot showing global feature importance across predictions.
+        Create a single prediction explanation plot (formerly called summary plot).
+
+        This plot shows how individual features contribute to one specific prediction,
+        with feature values displayed alongside SHAP values.
 
         Args:
-            shap_result: SHAP computation results
+            shap_result: SHAP computation results for a single prediction
             top_n: Number of top features to display
 
         Returns:
@@ -302,7 +305,7 @@ class SHAPVisualizer:
             # Sort features by absolute contribution
             sorted_features = sorted(contributions.items(), key=lambda x: abs(x[1]), reverse=True)[:top_n]
 
-            # Prepare data for summary plot
+            # Prepare data for single prediction plot
             feature_names = [f[0] for f in sorted_features]
             shap_values = [f[1] for f in sorted_features]
 
@@ -334,7 +337,7 @@ class SHAPVisualizer:
             ax.set_yticks(y_pos)
             ax.set_yticklabels([name.replace('_', ' ') for name in feature_names], fontsize=10)
             ax.set_xlabel('SHAP Value (Impact on Prediction)', fontsize=11)
-            ax.set_title('SHAP Summary Plot - Global Feature Importance',
+            ax.set_title('SHAP Single Prediction Plot - Feature Contributions',
                         fontsize=14, fontweight='bold', pad=20)
 
             # Add legend
@@ -356,8 +359,286 @@ class SHAPVisualizer:
             return fig
 
         except Exception as e:
-            logger.error(f"Error creating summary plot: {str(e)}")
-            return self._create_error_plot("Summary Plot Error")
+            logger.error(f"Error creating single prediction plot: {str(e)}")
+            return self._create_error_plot("Single Prediction Plot Error")
+
+    def create_global_summary_plot(self, shap_results: List[Dict[str, Any]], top_n: int = 10) -> plt.Figure:
+        """
+        Create a SHAP summary plot following best practices using SHAP Explanation objects.
+
+        This implementation follows SHAP best practices by:
+        - Using shap.Explanation objects for proper data structure
+        - Preserving original feature types (no manual encoding)
+        - Handling version compatibility
+        - Providing robust fallback options
+
+        Args:
+            shap_results: List of SHAP computation results from multiple predictions
+            top_n: Number of top features to display
+
+        Returns:
+            Matplotlib figure object
+        """
+        try:
+            if not shap_results or len(shap_results) < 2:
+                return self._create_error_plot("Need at least 2 predictions for global summary")
+
+            # Extract data following SHAP best practices
+            feature_names = list(shap_results[0]['feature_contributions'].keys())
+            n_predictions = len(shap_results)
+            n_features = len(feature_names)
+
+            # Initialize arrays for SHAP values and base values
+            shap_values = np.zeros((n_predictions, n_features))
+            base_values = np.zeros(n_predictions)
+
+            # Prepare feature values (preserve original types)
+            feature_values = []
+            for result in shap_results:
+                row_values = []
+                for feature in feature_names:
+                    value = result['input_values'].get(feature, None)
+                    row_values.append(value)
+                feature_values.append(row_values)
+
+            # Fill SHAP values and base values
+            for i, result in enumerate(shap_results):
+                contributions = result['feature_contributions']
+                base_values[i] = result.get('expected_value', 0.0)
+
+                for j, feature in enumerate(feature_names):
+                    shap_values[i, j] = contributions.get(feature, 0.0)
+
+            # Convert to DataFrame to preserve data types
+            features_df = pd.DataFrame(feature_values, columns=feature_names)
+
+            # Debug logging
+            logger.info(f"Creating global summary plot for {n_predictions} predictions")
+            logger.info(f"Feature matrix shape: {features_df.shape}")
+            logger.info(f"SHAP values shape: {shap_values.shape}")
+
+            # Create figure
+            fig = plt.figure(figsize=(14, 6))
+
+            # Try modern SHAP approach first (v0.40+)
+            try:
+                # Create SHAP Explanation object (modern approach)
+                explanation = shap.Explanation(
+                    values=shap_values,
+                    base_values=base_values,
+                    data=features_df.values,  # Let SHAP handle encoding
+                    feature_names=feature_names
+                )
+
+                # Create summary plot using Explanation object
+                shap.summary_plot(explanation, max_display=top_n, show=False)
+
+            except (AttributeError, TypeError) as e:
+                # Fallback for older SHAP versions or when Explanation fails
+                logger.warning(f"Modern SHAP approach failed: {e}. Using legacy approach.")
+
+                try:
+                    # Legacy approach - direct array usage
+                    shap.summary_plot(
+                        shap_values,
+                        features_df.values,
+                        feature_names=feature_names,
+                        max_display=top_n,
+                        show=False
+                    )
+                except Exception as legacy_error:
+                    logger.error(f"Legacy SHAP approach also failed: {legacy_error}")
+                    # Final fallback to custom implementation
+                    return self._create_custom_summary_plot(shap_results, top_n)
+
+            # Customize the plot for better interpretability
+            ax = plt.gca()
+            ax.set_title(f'SHAP Global Summary Plot - Risk vs Protective Factors\n'
+                        f'({n_predictions} predictions analyzed)',
+                        fontsize=16, fontweight='bold', pad=20)
+
+            # Add clear risk/protective labels on x-axis
+            ax.set_xlabel('SHAP Value (Impact on Non-Adherence Risk)', fontsize=12, fontweight='bold')
+
+            # Add vertical line at zero to separate risk from protective
+            ax.axvline(x=0, color='black', linestyle='-', linewidth=2, alpha=0.8)
+
+            # Add background colors to make regions clearer
+            ax.axvspan(ax.get_xlim()[0], 0, alpha=0.1, color='green', label='Protective Factors')
+            ax.axvspan(0, ax.get_xlim()[1], alpha=0.1, color='red', label='Risk Factors')
+
+            # Add text labels for the regions
+            ax.text(ax.get_xlim()[0] * 0.3, ax.get_ylim()[1] * 0.95,
+                   '🛡️ PROTECTIVE\n(Lowers Risk)', fontsize=11, fontweight='bold',
+                   ha='center', va='top', color='darkgreen',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgreen', alpha=0.7))
+
+            ax.text(ax.get_xlim()[1] * 0.3, ax.get_ylim()[1] * 0.95,
+                   '⚠️ RISK FACTORS\n(Increases Risk)', fontsize=11, fontweight='bold',
+                   ha='center', va='top', color='darkred',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='lightcoral', alpha=0.7))
+
+            # Add interpretation guide (positioned to avoid overlapping feature labels)
+            plt.figtext(0.98, 0.02,
+                       '📊 INTERPRETATION:\n'
+                       '• 🟢 LEFT = Protective (lowers risk)\n'
+                       '• 🔴 RIGHT = Risk factors (increases risk)\n'
+                       '• 🎨 Color = Feature value\n'
+                       '• 📈 Features by impact',
+                       fontsize=9, style='italic',
+                       ha='right', va='bottom',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='lightyellow', alpha=0.9),
+                       multialignment='right')
+
+            plt.tight_layout()
+            return fig
+
+        except Exception as e:
+            logger.error(f"Error creating global summary plot: {str(e)}")
+            # Use custom implementation as final fallback
+            return self._create_custom_summary_plot(shap_results, top_n)
+
+    def _create_fallback_global_plot(self, shap_matrix, feature_names, n_predictions):
+        """
+        Create a fallback global plot when SHAP summary_plot fails.
+        """
+        try:
+            fig, ax = plt.subplots(figsize=(14, 6))
+
+            # Calculate mean absolute SHAP values for feature ranking
+            mean_abs_shap = np.abs(shap_matrix).mean(0)
+
+            # Sort features by importance
+            sorted_indices = np.argsort(mean_abs_shap)[::-1]
+            top_indices = sorted_indices[:10]  # Show top 10
+
+            # Plot horizontal bar chart
+            y_pos = np.arange(len(top_indices))
+            ax.barh(y_pos, mean_abs_shap[top_indices])
+
+            # Set labels
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels([feature_names[i] for i in top_indices])
+            ax.set_xlabel('Mean Absolute SHAP Value')
+            ax.set_title(f'Global Feature Importance\n({n_predictions} predictions)')
+
+            plt.tight_layout()
+            return fig
+
+        except Exception as e:
+            logger.error(f"Fallback plot also failed: {str(e)}")
+            return self._create_error_plot("Fallback Global Plot Error")
+
+    def _create_custom_summary_plot(self, shap_results: List[Dict[str, Any]], top_n: int = 10) -> plt.Figure:
+        """
+        Create a custom beeswarm-style summary plot when SHAP's built-in methods fail.
+
+        This mimics SHAP's summary plot style but handles mixed data types better.
+        """
+        try:
+            fig, ax = plt.subplots(figsize=(14, 6))
+
+            # Calculate feature importance
+            all_features = list(shap_results[0]['feature_contributions'].keys())
+            feature_importance = {}
+
+            for feature in all_features:
+                shap_values = [abs(result['feature_contributions'].get(feature, 0))
+                              for result in shap_results]
+                feature_importance[feature] = np.mean(shap_values)
+
+            # Sort and select top features
+            sorted_features = sorted(feature_importance.items(),
+                                   key=lambda x: x[1], reverse=True)[:top_n]
+            selected_features = [f[0] for f in sorted_features]
+
+            # Create beeswarm-style plot
+            y_positions = list(range(len(selected_features)))
+
+            for i, feature in enumerate(selected_features):
+                # Get SHAP values and feature values for this feature
+                shap_vals = []
+                feat_vals = []
+
+                for result in shap_results:
+                    shap_val = result['feature_contributions'].get(feature, 0)
+                    feat_val = result['input_values'].get(feature, 0)
+
+                    # Normalize feature values for coloring
+                    if isinstance(feat_val, str):
+                        # Handle categorical features
+                        if feat_val in ['High', 'Medium', 'Low']:
+                            feat_val = {'Low': 0.0, 'Medium': 0.5, 'High': 1.0}[feat_val]
+                        elif feat_val in ['Male', 'Female']:
+                            feat_val = 1.0 if feat_val == 'Male' else 0.0
+                        elif feat_val in ['Yes', 'No']:
+                            feat_val = 1.0 if feat_val == 'Yes' else 0.0
+                        else:
+                            feat_val = hash(feat_val) % 100 / 100.0
+                    else:
+                        feat_val = float(feat_val) if feat_val is not None else 0.0
+
+                    shap_vals.append(shap_val)
+                    feat_vals.append(feat_val)
+
+                # Normalize feature values to [0, 1] for coloring
+                feat_vals = np.array(feat_vals)
+                if feat_vals.std() > 0:
+                    feat_vals = (feat_vals - feat_vals.min()) / (feat_vals.max() - feat_vals.min())
+
+                # Add jitter to y-positions for beeswarm effect
+                y_jittered = i + np.random.normal(0, 0.1, len(shap_vals))
+
+                # Create scatter plot with color mapping
+                scatter = ax.scatter(shap_vals, y_jittered, c=feat_vals,
+                                   cmap='coolwarm', alpha=0.6, s=30)
+
+            # Customize plot for better interpretability
+            ax.set_yticks(y_positions)
+            ax.set_yticklabels([f.replace('_', ' ') for f in selected_features])
+            ax.set_xlabel('SHAP Value (Impact on Non-Adherence Risk)', fontsize=12, fontweight='bold')
+            ax.set_title(f'Feature Impact Summary - Risk vs Protective Factors\n'
+                        f'({len(shap_results)} predictions analyzed)',
+                        fontsize=14, fontweight='bold')
+            ax.axvline(x=0, color='black', linestyle='-', linewidth=2, alpha=0.8)
+
+            # Add background colors to make regions clearer
+            ax.axvspan(ax.get_xlim()[0], 0, alpha=0.1, color='green', label='Protective Factors')
+            ax.axvspan(0, ax.get_xlim()[1], alpha=0.1, color='red', label='Risk Factors')
+
+            # Add text labels for the regions
+            ax.text(ax.get_xlim()[0] * 0.3, ax.get_ylim()[1] * 0.95,
+                   '🛡️ PROTECTIVE\n(Lowers Risk)', fontsize=11, fontweight='bold',
+                   ha='center', va='top', color='darkgreen',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgreen', alpha=0.7))
+
+            ax.text(ax.get_xlim()[1] * 0.3, ax.get_ylim()[1] * 0.95,
+                   '⚠️ RISK FACTORS\n(Increases Risk)', fontsize=11, fontweight='bold',
+                   ha='center', va='top', color='darkred',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='lightcoral', alpha=0.7))
+
+            # Add colorbar
+            cbar = plt.colorbar(scatter, ax=ax)
+            cbar.set_label('Feature Value\n(normalized)', fontsize=10)
+
+            # Add interpretation guide (positioned to avoid overlapping feature labels)
+            plt.figtext(0.98, 0.02,
+                       '📊 INTERPRETATION:\n'
+                       '• 🟢 LEFT = Protective (lowers risk)\n'
+                       '• 🔴 RIGHT = Risk factors (increases risk)\n'
+                       '• 🎨 Color = Feature value\n'
+                       '• 📈 Features by impact',
+                       fontsize=9, style='italic',
+                       ha='right', va='bottom',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='lightyellow', alpha=0.9),
+                       multialignment='right')
+
+            plt.tight_layout()
+            return fig
+
+        except Exception as e:
+            logger.error(f"Custom summary plot failed: {str(e)}")
+            return self._create_error_plot("Custom Summary Plot Error")
 
     def create_shap_summary(self, shap_result: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -469,9 +750,9 @@ def display_feature_bar_chart(shap_result: Dict[str, Any], top_n: int = 10):
     except Exception as e:
         st.error(f"Error displaying feature bar chart: {str(e)}")
 
-def display_summary_plot(shap_result: Dict[str, Any], top_n: int = 10):
+def display_single_prediction_plot(shap_result: Dict[str, Any], top_n: int = 10):
     """
-    Display SHAP summary plot in Streamlit.
+    Display single prediction explanation plot in Streamlit.
 
     Args:
         shap_result: SHAP computation results
@@ -479,10 +760,29 @@ def display_summary_plot(shap_result: Dict[str, Any], top_n: int = 10):
     """
     try:
         visualizer = SHAPVisualizer()
-        fig = visualizer.create_summary_plot(shap_result, top_n)
+        fig = visualizer.create_single_prediction_plot(shap_result, top_n)
         st.pyplot(fig)
     except Exception as e:
-        st.error(f"Error displaying summary plot: {str(e)}")
+        st.error(f"Error displaying single prediction plot: {str(e)}")
+
+def display_global_summary_plot(shap_results: List[Dict[str, Any]], top_n: int = 10):
+    """
+    Display global SHAP summary plot across multiple predictions in Streamlit.
+
+    Args:
+        shap_results: List of SHAP computation results from multiple predictions
+        top_n: Number of top features to display
+    """
+    try:
+        if not shap_results:
+            st.warning("No SHAP results available for global summary plot")
+            return
+
+        visualizer = SHAPVisualizer()
+        fig = visualizer.create_global_summary_plot(shap_results, top_n)
+        st.pyplot(fig)
+    except Exception as e:
+        st.error(f"Error displaying global summary plot: {str(e)}")
 
 def display_shap_summary(shap_result: Dict[str, Any]):
     """
@@ -520,12 +820,13 @@ def display_shap_summary(shap_result: Dict[str, Any]):
     except Exception as e:
         st.error(f"Error displaying SHAP summary: {str(e)}")
 
-def create_shap_visualization_section(shap_result: Dict[str, Any]):
+def create_shap_visualization_section(shap_result: Dict[str, Any], shap_results: Optional[List[Dict[str, Any]]] = None):
     """
     Create a complete SHAP visualization section for Streamlit.
 
     Args:
-        shap_result: SHAP computation results
+        shap_result: SHAP computation results for current prediction
+        shap_results: Optional list of SHAP results from multiple predictions for global summary
     """
     if shap_result is None:
         st.warning("SHAP computation failed. Unable to display explanations.")
@@ -534,23 +835,31 @@ def create_shap_visualization_section(shap_result: Dict[str, Any]):
     st.markdown("### 📊 SHAP Model Explanations")
 
     # Visualization tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["💧 Waterfall Plot", "🎯 Force Plot", "📊 Feature Importance", "📈 Summary Plot"])
+    tab_names = ["💧 Waterfall Plot", "🎯 Force Plot", "📊 Feature Importance", "🔍 Single Prediction", "📈 Global Summary"]
+    tabs = st.tabs(tab_names)
 
-    with tab1:
+    with tabs[0]:
         st.markdown("**Waterfall Plot**: Shows how each feature contributes to the prediction, starting from the expected value.")
         display_waterfall_plot(shap_result)
 
-    with tab2:
+    with tabs[1]:
         st.markdown("**Force Plot**: Displays the positive and negative forces pushing the prediction away from the expected value.")
         display_force_plot(shap_result)
 
-    with tab3:
+    with tabs[2]:
         st.markdown("**Feature Importance**: Ranks features by their absolute contribution to the prediction.")
         display_feature_bar_chart(shap_result)
 
-    with tab4:
-        st.markdown("**Summary Plot**: Shows global feature importance with actual feature values for comprehensive analysis.")
-        display_summary_plot(shap_result)
+    with tabs[3]:
+        st.markdown("**Single Prediction Plot**: Shows feature contributions for this specific prediction with actual feature values.")
+        display_single_prediction_plot(shap_result)
+
+    with tabs[4]:
+        st.markdown("**Global Summary Plot**: Shows how features contribute across multiple predictions (requires multiple SHAP results).")
+        if shap_results and len(shap_results) > 1:
+            display_global_summary_plot(shap_results)
+        else:
+            st.info("💡 Global summary plot requires multiple predictions. Generate SHAP explanations for several patients to see this visualization.")
 
     # Additional insights
     with st.expander("💡 Interpretation Guide"):
