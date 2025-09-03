@@ -1,3 +1,4 @@
+imblearn
 joblib==1.5.2
 lightgbm==4.6.0
 matplotlib==3.10.6
@@ -5,4 +6,7 @@ numba==0.61.2
 numpy==2.2.6
 pandas==2.3.2
 scikit-learn==1.7.1
+seaborn
+shap
 streamlit==1.49.1
+
