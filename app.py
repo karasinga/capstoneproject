@@ -138,6 +138,9 @@ CLINICAL_INTERVENTIONS = {
         ]
     }
 }
+###########################################################################################################
+# Function to generate clinical recommendations based on SHAP results
+###########################################################################################################
 
 def get_clinical_recommendations(shap_result, patient_data):
     """
